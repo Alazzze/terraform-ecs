@@ -259,22 +259,42 @@ resource "aws_iam_instance_profile" "ecs_instance_profile" {
 # Launch Template
 resource "aws_launch_template" "ecs_launch_template" {
   name_prefix   = "stasec2-"
-  image_id      = "ami-04a81a99f5ec58529" # Ubuntu Server 24.04 LTS AMI
+  image_id      = "ami-0c8e23f950c7725b9" # Amazon Linux 2 AMI
   instance_type = "t3.medium"
   iam_instance_profile {
     name = aws_iam_instance_profile.ecs_instance_profile.name
   }
   key_name = "alazze"
+  
+  network_interfaces {
+    associate_public_ip_address = true
+    security_groups             = [aws_security_group.stas_security_group.id]
+  }
 
   user_data = base64encode(<<EOF
 #!/bin/bash
-sudo apt update -y
-sudo apt install -y docker.io
+# Update the package repository
+sudo yum update -y
+
+# Install Docker
+sudo amazon-linux-extras install docker -y
 sudo systemctl start docker
 sudo systemctl enable docker
-sudo apt install -y ecs-init
+
+# Install ECS agent
+sudo yum install -y ecs-init
+
+# Enable and start the ECS service
 sudo systemctl enable --now ecs.service
-echo "ECS_CLUSTER=stasECStask" | sudo tee /etc/ecs/ecs.config
+
+# Configure ECS
+cat << ECS_CONFIG > /etc/ecs/ecs.config
+ECS_CLUSTER=stasECStask
+ECS_ENGINE_TASK_CLEANUP_WAIT_DURATION=5m
+ECS_IMAGE_CLEANUP_INTERVAL=10m
+ECS_AVAILABLE_LOGGING_DRIVERS=["json-file","awslogs"]
+ECS_LOGFILE=/log/ecs-agent.log
+ECS_CONFIG
 EOF
   )
 }
@@ -291,58 +311,39 @@ resource "aws_autoscaling_group" "ecs_asg" {
   vpc_zone_identifier = [aws_subnet.stas_subnet1.id, aws_subnet.stas_subnet2.id]
   health_check_type   = "EC2"
   health_check_grace_period = 300
-
+  force_delete        = true
   tag {
     key                 = "Name"
-    value               = "ecs-asg-instance"
+    value               = "ecs-instance"
     propagate_at_launch = true
   }
 }
 
 # ECS Cluster
-resource "aws_ecs_cluster" "ecs_cluster" {
+resource "aws_ecs_cluster" "stas_ecs_cluster" {
   name = "stasECStask"
 }
 
 # ECS Task Definition
 resource "aws_ecs_task_definition" "nginx_task" {
   family                   = "nginx"
+  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
   network_mode             = "bridge"
+  container_definitions    = jsonencode([
+    {
+      name      = "nginx"
+      image     = "nginx:latest"
+      memory    = 512            
+      memoryReservation = 256    
+      cpu       = 256
+      essential = true
+      portMappings = [
+        {
+          containerPort = 80
+          hostPort      = 80
+        }
+      ]
+    }
+  ])
   requires_compatibilities = ["EC2"]
-
-  container_definitions = jsonencode([{
-    name      = "nginx"
-    image     = "nginx:latest"
-    essential = true
-    memory    = 512
-    cpu       = 256
-    portMappings = [
-      {
-        containerPort = 80
-        hostPort      = 80
-        protocol      = "tcp"
-      }
-    ]
-  }])
-
-  tags = {
-    Name = "nginx-task"
-  }
-}
-
-# ECS Service
-resource "aws_ecs_service" "nginx_service" {
-  name            = "nginx-service"
-  cluster         = aws_ecs_cluster.ecs_cluster.id
-  task_definition = aws_ecs_task_definition.nginx_task.arn
-  desired_count   = 3
-  launch_type     = "EC2"
-
-  load_balancer {
-    target_group_arn = aws_lb_target_group.nginx_target_group.arn
-    container_name   = "nginx"
-    container_port   = 80
-  }
-
-  depends_on = [aws_autoscaling_group.ecs_asg]
 }
