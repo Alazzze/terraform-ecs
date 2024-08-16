@@ -2,49 +2,6 @@ provider "aws" {
   region = "us-east-1"
 }
 
-# Оголошення змінних
-variable "name" {
-  description = "Prefix for resource names"
-  type        = string
-  default     = "myapp"
-}
-
-variable "image_id" {
-  description = "The AMI ID for the instances"
-  type        = string
-  default     = "ami-04a81a99f5ec58529"
-}
-
-variable "instance_type" {
-  description = "EC2 instance type"
-  type        = string
-  default     = "t3.medium"
-}
-
-variable "iam_instance_profile" {
-  description = "IAM instance profile name"
-  type        = string
-  default     = "ecsInstanceProfile"
-}
-
-variable "key_name" {
-  description = "SSH key name for the instances"
-  type        = string
-  default     = "alazze"
-}
-
-variable "associate_public_ip_address" {
-  description = "Associate a public IP address with the instance"
-  type        = bool
-  default     = true
-}
-
-variable "volume_size" {
-  description = "Size of the EBS volume in GB"
-  type        = number
-  default     = 20
-}
-
 # VPC
 resource "aws_vpc" "stas_vpc" {
   cidr_block           = "10.0.0.0/16"
@@ -124,7 +81,7 @@ resource "aws_security_group" "stas_security_group" {
 
   ingress {
     from_port   = 0
-    to_port     = 0
+    to_port     = 65535
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -132,15 +89,6 @@ resource "aws_security_group" "stas_security_group" {
   tags = {
     Name = "stas-security-group"
   }
-}
-
-resource "aws_security_group_rule" "allow_all_tcp_from_sg" {
-  type                     = "ingress"
-  from_port                = 0
-  to_port                  = 65535
-  protocol                 = "tcp"
-  security_group_id        = aws_security_group.stas_security_group.id
-  source_security_group_id = aws_security_group.stas_security_group.id
 }
 
 # Application Load Balancer
@@ -229,8 +177,7 @@ resource "aws_iam_policy" "ecs_task_execution_policy" {
           "logs:CreateLogStream",
           "logs:PutLogEvents",
           "ecr:GetDownloadUrlForLayer",
-          "ecr:BatchCheckLayerAvailability",
-          "ecr:GetDownloadUrlForLayer"
+          "ecr:BatchCheckLayerAvailability"
         ]
         Resource = "*"
       }
@@ -241,50 +188,6 @@ resource "aws_iam_policy" "ecs_task_execution_policy" {
 resource "aws_iam_role_policy_attachment" "ecs_task_execution_role_policy_attachment" {
   role       = aws_iam_role.ecs_task_execution_role.name
   policy_arn = aws_iam_policy.ecs_task_execution_policy.arn
-}
-
-# IAM Role for ECS Task
-resource "aws_iam_role" "ecs_task_role" {
-  name = "ecsTaskRole"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ecs-tasks.amazonaws.com"
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Name = "ecs-task-role"
-  }
-}
-
-resource "aws_iam_policy" "ecs_task_policy" {
-  name        = "ecsTaskPolicy"
-  description = "IAM policy for ECS task"
-  policy      = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "ecs_task_role_policy_attachment" {
-  role       = aws_iam_role.ecs_task_role.name
-  policy_arn = aws_iam_policy.ecs_task_policy.arn
 }
 
 # IAM Role for ECS Instances
@@ -355,105 +258,83 @@ resource "aws_iam_instance_profile" "ecs_instance_profile" {
 
 # Launch Template
 resource "aws_launch_template" "ecs_launch_template" {
-  name_prefix   = "${var.name}-ecs-"
-  image_id      = var.image_id
-  instance_type = var.instance_type
+  name_prefix   = "stasec2-"
+  image_id      = "ami-04a81a99f5ec58529" # Ubuntu Server 24.04 LTS AMI
+  instance_type = "t3.medium"
   iam_instance_profile {
-    name = var.iam_instance_profile
+    name = aws_iam_instance_profile.ecs_instance_profile.name
   }
-  key_name  = var.key_name
+  key_name = "alazze"
 
-  user_data = base64encode(<<-EOF
-    #!/bin/bash
-    # Оновлюємо пакети
-    sudo apt-get update -y
-    sudo apt-get upgrade -y
-
-    # Встановлюємо Docker
-    sudo apt-get install -y docker.io
-    sudo systemctl start docker
-    sudo systemctl enable docker
-
-    # Завантажуємо та встановлюємо Amazon ECS агент
-    curl -O https://s3.us-east-1.amazonaws.com/amazon-ecs-agent-us-east-1/amazon-ecs-init-latest.amd64.deb
-    sudo dpkg -i amazon-ecs-init-latest.amd64.deb
-
-    # Налаштовуємо конфігурацію ECS
-    echo "ECS_CLUSTER=my-ecs-cluster" | sudo tee /etc/ecs/ecs.config
-
-    # Запускаємо ecs.service
-    sudo systemctl enable --now ecs.service --no-block
-  EOF
+  user_data = base64encode(<<EOF
+#!/bin/bash
+sudo apt update -y
+sudo apt install -y docker.io
+sudo systemctl start docker
+sudo systemctl enable docker
+sudo apt install -y ecs-init
+sudo systemctl enable --now ecs.service
+echo "ECS_CLUSTER=stasECStask" | sudo tee /etc/ecs/ecs.config
+EOF
   )
-
-  network_interfaces {
-    associate_public_ip_address = var.associate_public_ip_address
-    security_groups             = [aws_security_group.stas_security_group.id]
-  }
-
-  block_device_mappings {
-    device_name = "/dev/xvda"
-
-    ebs {
-      volume_size           = var.volume_size
-      volume_type           = "gp2"
-    }
-  }
 }
 
 # Auto Scaling Group
 resource "aws_autoscaling_group" "ecs_asg" {
+  desired_capacity     = 1
+  max_size             = 2
+  min_size             = 1
   launch_template {
     id      = aws_launch_template.ecs_launch_template.id
     version = "$Latest"
   }
   vpc_zone_identifier = [aws_subnet.stas_subnet1.id, aws_subnet.stas_subnet2.id]
-  min_size             = 1
-  max_size             = 2
-  desired_capacity     = 1
+  health_check_type   = "EC2"
+  health_check_grace_period = 300
 
   tag {
     key                 = "Name"
-    value               = "${var.name}-ecs-instance"
+    value               = "ecs-asg-instance"
     propagate_at_launch = true
   }
-
-  depends_on = [
-    aws_launch_template.ecs_launch_template
-  ]
 }
 
 # ECS Cluster
 resource "aws_ecs_cluster" "ecs_cluster" {
-  name = "my-ecs-cluster"
+  name = "stasECStask"
 }
 
 # ECS Task Definition
-resource "aws_ecs_task_definition" "nginx_task_definition" {
+resource "aws_ecs_task_definition" "nginx_task" {
   family                   = "nginx"
-  execution_role_arn       = aws_iam_role.ecs_task_execution_role.arn
-  task_role_arn            = aws_iam_role.ecs_task_role.arn
   network_mode             = "bridge"
-  container_definitions    = jsonencode([{
+  requires_compatibilities = ["EC2"]
+
+  container_definitions = jsonencode([{
     name      = "nginx"
     image     = "nginx:latest"
-    cpu       = 256
-    memory    = 512
     essential = true
+    memory    = 512
+    cpu       = 256
     portMappings = [
       {
         containerPort = 80
         hostPort      = 80
+        protocol      = "tcp"
       }
     ]
   }])
+
+  tags = {
+    Name = "nginx-task"
+  }
 }
 
 # ECS Service
 resource "aws_ecs_service" "nginx_service" {
   name            = "nginx-service"
   cluster         = aws_ecs_cluster.ecs_cluster.id
-  task_definition = aws_ecs_task_definition.nginx_task_definition.arn
+  task_definition = aws_ecs_task_definition.nginx_task.arn
   desired_count   = 3
   launch_type     = "EC2"
 
@@ -463,7 +344,5 @@ resource "aws_ecs_service" "nginx_service" {
     container_port   = 80
   }
 
-  depends_on = [
-    aws_lb_listener.nginx_listener
-  ]
+  depends_on = [aws_autoscaling_group.ecs_asg]
 }
