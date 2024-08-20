@@ -86,6 +86,12 @@ resource "aws_security_group" "stas_security_group" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+   ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
   ingress {
     from_port   = 0
     to_port     = 65535
@@ -229,6 +235,9 @@ resource "aws_iam_policy" "ecs_instance_policy" {
       {
         Effect = "Allow"
         Action = [
+          "ecs:AmazonEC2ContainerServiceforEC2Role",
+          "ecs:AmazonEC2ContainerServiceRole",
+          "ecs:DescribeContainerInstances",
           "ecs:CreateCluster",
           "ecs:DeregisterContainerInstance",
           "ecs:DiscoverPollEndpoint",
@@ -238,30 +247,50 @@ resource "aws_iam_policy" "ecs_instance_policy" {
           "ecs:StartTelemetrySession",
           "ecs:UpdateContainerInstancesState",
           "ecs:SubmitTaskStateChange",
+          "ecs:Poll",
           "ecs:Submit*",
           "logs:*",
           "logs:CreateLogStream",
           "logs:PutLogEvents",
-          "iam:PassRole"
+          "logs:DescribeLogStreams"
+        
         ]
         Resource = "*"
       },
       {
         Effect = "Allow"
         Action = [
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
+          "ecs:CreateService",
+          "ecs:UpdateService",
+          "ecs:DeleteService",
+          "ecs:DescribeServices",
+          "application-autoscaling:Describe*",
+          "application-autoscaling:PutScalingPolicy",
+          "application-autoscaling:RegisterScalableTarget",
+          "cloudwatch:DescribeAlarms",
+          "cloudwatch:PutMetricAlarm"
         ]
         Resource = "*"
       },
       {
         Effect = "Allow"
-        Action = "iam:PassRole"
+        Action = [
+          "iam:GetPolicy",
+          "iam:GetPolicyVersion",
+          "iam:GetRole",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListRoles",
+          "iam:ListGroups",
+          "iam:ListUsers",
+          "iam:PassRole"
+        ]
         Resource = "*"
       }
     ]
   })
 }
+
+
 
 resource "aws_iam_role_policy_attachment" "ecs_instance_role_policy_attachment" {
   role       = aws_iam_role.ecs_instance_role.name
@@ -325,6 +354,9 @@ resource "aws_ecs_cluster" "stas_ecs_cluster" {
   name = "stasECStask"
 }
 
+
+
+
 # ECS Task Definition
 resource "aws_ecs_task_definition" "nginx_task" {
   family                = "nginx-task"
@@ -338,7 +370,7 @@ resource "aws_ecs_task_definition" "nginx_task" {
     portMappings = [
       {
         containerPort = 80
-        hostPort      = 80
+        hostPort      = 0
       }
     ]
   }])
